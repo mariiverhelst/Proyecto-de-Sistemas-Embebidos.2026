@@ -4,8 +4,14 @@
 #include "driver/timer.h"
 #include "esp_task_wdt.h"
 #include "lcd.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "ADC.h"
+#include <stdio.h>
 ///////////////////////////////////////////////////////////////////////////
 // el Pin 21 y 22 NO SE PUEDEN USAR PARA OTRA COSA, SON PARA EL LCD////////
+// Pin 32 es el pin de sensado del voltage de la PT100/////////////
 //////////////////////////////////////////////////////////////////////////
 #define PWM 13
 #define ZC 26
@@ -14,9 +20,9 @@
 
 
 static uint64_t now = 0;
-static uint64_t last = 0;
+static uint64_t last, last_adc, last_prnt = 0;
 static uint64_t pwm_on = 0;
-static uint8_t dut = 0;
+
 //static volatile bool triac_enable = false;
 
 
@@ -77,6 +83,10 @@ void app_main() {
     timer_start(TIMER_GROUP_0,TIMER_0);
     lcd_init();
     lcd_clear();
+    if (pt100_init() != ESP_OK) {
+        lcd_set_cursor(0, 1);
+        lcd_print("Error PT100");
+    }
     lcd_set_cursor(0, 0);
     lcd_print("Hola lindas");
 
@@ -85,17 +95,23 @@ void app_main() {
         timer_get_counter_value(TIMER_GROUP_0,TIMER_0,&now);
 
 
-       
+        if (now-last_adc>=1000){
+            pt100_measurement();
+            last_adc=now;
+        }
+        
        
          // duty cycle del 50%
         if (now-last>=periodo){
             last=now;
-            dut++;
         }
         
-
-
-        vTaskDelay(pdMS_TO_TICKS(1));
+        if (now - last_prnt >= 500000) {
+            int v = pt100_get_voltage_mv();
+            printf("PT100 = %d mV\n", v);
+            last_prnt = now;
+        }
+        
     }
 
 
