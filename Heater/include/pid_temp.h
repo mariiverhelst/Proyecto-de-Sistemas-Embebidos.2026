@@ -7,11 +7,11 @@
 // CONSTANTES variables 
 // ===============================
 // Parametros PID iniciales
-#define PID_KP_DEFAULT              0.341f
-#define PID_KI_DEFAULT              1.049f
+#define PID_KP_DEFAULT              10.341f
+#define PID_KI_DEFAULT              1.25f
 #define PID_KD_DEFAULT              0.0277f
 // Tiempo de muestreo del control
-#define PID_DT_S                    0.5f // 500ms
+#define PID_DT_S                    8.0f // 8000ms
 // Setpoint verdadero por defecto
 #define PID_SP_TRUE_DEFAULT         37.0f
 // Rampa por defecto
@@ -19,15 +19,15 @@
 #define PID_RAMP_RATE_DEFAULT       0.0f
 // Si la diferencia contra el setpoint verdadero es mayor a 5,
 // entra en boost de maxima potencia
-#define PID_BOOST_DELTA_START       5.0f
+#define PID_BOOST_DELTA_START       7.0f
 // Sale del boost cuando haya subido esta cantidad de grados
-#define PID_BOOST_DELTA_EXIT        1.0f
+#define PID_BOOST_DELTA_EXIT        3.0f
 // Si la temperatura supera sp_true + 3, apaga 10 minutos
-#define PID_OVERTEMP_DELTA          3.0f
+#define PID_OVERTEMP_DELTA          2.5f
 #define PID_LOCK_TIME_MS            600000ULL
 // Limites de integral
-#define PID_INT_MIN                -50.0f
-#define PID_INT_MAX                 50.0f
+#define PID_INT_MIN                -15.0f
+#define PID_INT_MAX                 70.0f
 // Limites de derivada
 #define PID_DERIV_MIN              -2.0f
 #define PID_DERIV_MAX               2.0f

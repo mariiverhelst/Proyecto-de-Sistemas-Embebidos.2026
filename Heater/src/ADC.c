@@ -16,6 +16,7 @@ static adc_cali_handle_t cali_handle;
 
 static uint64_t acumulado = 0;
 static uint32_t divisor   = 0;
+static uint32_t promedio_raw= 0;
 static int      voltage_pt100_mv = 0;
 
 esp_err_t pt100_init(void){
@@ -69,15 +70,15 @@ void pt100_measurement(void)
     // Lectura de descarte por llamada (opcional)
     adc_oneshot_read(adc1_handle, PT100_ADC_CHANNEL, &raw);
 
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 50; i++) {
         if (adc_oneshot_read(adc1_handle, PT100_ADC_CHANNEL, &raw) == ESP_OK) {
             acumulado += (uint64_t)raw;
             divisor++;
         }
     }
 
-    if (divisor >= 8000) {   // 8000 muestras acumuladas
-        uint32_t promedio_raw = (uint32_t)(acumulado / divisor);
+    if (divisor >= 33333) {   // 8000 muestras acumuladas
+        promedio_raw = (uint32_t)(acumulado / divisor);
 
         int voltage_mv = 0;
         if (adc_cali_raw_to_voltage(cali_handle, promedio_raw, &voltage_mv) == ESP_OK) {
@@ -92,7 +93,12 @@ void pt100_measurement(void)
     }
     
 }
-
+// devuelve el voltage ajustado de la funcion
 int pt100_get_voltage_mv(void){
     return voltage_pt100_mv;
 }
+// devuelve el valor en bits del ADC, este es mejor para la curva de calibracion del sensor
+uint32_t pt_get_adc(void){
+    return promedio_raw;
+}
+/// 23.3 0.478

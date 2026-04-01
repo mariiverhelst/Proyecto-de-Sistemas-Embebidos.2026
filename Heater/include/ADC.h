@@ -7,3 +7,4 @@ esp_err_t pt100_init(void);
 // Función que se llamará periódicamente (cada 1 ms)
 void pt100_measurement(void);
 int pt100_get_voltage_mv(void);
+uint32_t pt_get_adc(void);
