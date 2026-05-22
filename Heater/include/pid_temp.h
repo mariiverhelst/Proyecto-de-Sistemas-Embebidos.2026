@@ -7,8 +7,8 @@
 // CONSTANTES variables 
 // ===============================
 // Parametros PID iniciales
-#define PID_KP_DEFAULT              10.341f
-#define PID_KI_DEFAULT              1.25f
+#define PID_KP_DEFAULT              30.00f
+#define PID_KI_DEFAULT              1.0f
 #define PID_KD_DEFAULT              0.0277f
 // Tiempo de muestreo del control
 #define PID_DT_S                    8.0f // 8000ms
@@ -26,7 +26,7 @@
 #define PID_OVERTEMP_DELTA          2.5f
 #define PID_LOCK_TIME_MS            600000ULL
 // Limites de integral
-#define PID_INT_MIN                -15.0f
+#define PID_INT_MIN                -1.0f
 #define PID_INT_MAX                 70.0f
 // Limites de derivada
 #define PID_DERIV_MIN              -2.0f
