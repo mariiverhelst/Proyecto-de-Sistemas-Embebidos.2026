@@ -11,50 +11,54 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include "pid_temp.h"
+#include "motor_rpm.h"    // ← MOTOR (1/3)
+
+// ✅ DISPLAY
+#include "display.h"
+
 ///////////////////////////////////////////////////////////////////////////
 // el Pin 21 y 22 NO SE PUEDEN USAR PARA OTRA COSA, SON PARA EL LCD////////
 // Pin 32 es el pin de sensado del voltage de la PT100/////////////
+// Pin 4 es el pin de lectura de RPM del motor (NPN desde NE555)///
 //////////////////////////////////////////////////////////////////////////
+
 #define PWM 13
 #define ZC 26
+#define BTN 23   // ✅ BOTÓN
+
 #define periodo 8000000
-
-
-
 
 static volatile uint64_t now = 0;
 static volatile uint64_t last=0;
 static uint64_t last_adc, last_prnt,last_graf, last_log5 = 0;
 static volatile uint64_t pwm_on = 0;
+
 float temp_actual_c =0.0f;
 float duty_cycle = 0.0f;
-static int   graf_idx  = 0;
-
+static int graf_idx = 0;
 static pid_temp_t pid;
 static float graf[240] = {0.0f};
-//static volatile bool triac_enable = false;
 
-
+// ✅ modo display
+bool mostrar_temp = true;
 
 void IRAM_ATTR zero_cross(void* arg){
     //gpio_set_level(PWM,triac_enable);
     if (now-last<= pwm_on){
-            gpio_set_level(PWM,1);
+        gpio_set_level(PWM,1);
     }
-    else gpio_set_level(PWM,0); 
-       
+    else gpio_set_level(PWM,0);
 }
-
 
 void calc_pwm(float duty){
     if (duty<0) duty=0;
     if (duty<100){
         pwm_on= (duty*periodo)/100;
-    }    
+    }
     else pwm_on=periodo;
 }
-void app_main() {
 
+void app_main() {
 
     gpio_config_t io_config =
     {
@@ -65,11 +69,11 @@ void app_main() {
         .intr_type = GPIO_INTR_POSEDGE
     };
     gpio_config(&io_config);
+
     gpio_install_isr_service(0);
     gpio_isr_handler_add(ZC, zero_cross, NULL);
 
-
-
+    motor_rpm_init();    // ← MOTOR (2/3)
 
     gpio_config_t out_cfg =
     {
@@ -81,7 +85,6 @@ void app_main() {
     };
     gpio_config(&out_cfg);
 
-
     timer_config_t timer_config = {
         .divider=80,
         .counter_dir=TIMER_COUNT_UP,
@@ -91,34 +94,59 @@ void app_main() {
     timer_init(TIMER_GROUP_0,TIMER_0,&timer_config);
     timer_set_counter_value(TIMER_GROUP_0,TIMER_0,0);
     timer_start(TIMER_GROUP_0,TIMER_0);
+
     lcd_init();
     lcd_clear();
+
     if (pt100_init() != ESP_OK) {
         lcd_set_cursor(0, 1);
         lcd_print("Error PT100");
     }
+
     lcd_set_cursor(0, 0);
     lcd_print("Hola lindas");
+
     pid_temp_init(&pid);
 
+    // ✅ INICIALIZAR DISPLAY
+    display_init();
+
+    // ✅ CONFIGURAR BOTÓN
+    gpio_set_direction(BTN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BTN, GPIO_PULLUP_ONLY);
+    int last_btn = 1;
 
     while(1){
-        timer_get_counter_value(TIMER_GROUP_0,TIMER_0,&now);
 
+        timer_get_counter_value(TIMER_GROUP_0,TIMER_0,&now);
+          
+        // ✅ DEBUG PIN RPM (ver si hay señal en GPIO 4)
+            printf("PIN4: %d\n", gpio_get_level(GPIO_NUM_4));
+
+        // ✅ LECTURA BOTÓN
+        int btn = gpio_get_level(BTN);
+        if (last_btn == 1 && btn == 0) {
+            mostrar_temp = !mostrar_temp;
+
+            // anti-rebote simple
+            for(volatile int i=0;i<100000;i++);
+        }
+        last_btn = btn;
 
         if (now-last_adc>=100){
             pt100_measurement();
             last_adc=now;
         }
-        if (graf_idx < 240 && (now - last_graf) >= 30000000ULL) {   // 30 s = 30 000 000 us
+
+        if (graf_idx < 240 && (now - last_graf) >= 30000000ULL) { // 30 s = 30 000 000 us
             uint32_t adc_raw = pt_get_adc();
             temp_actual_c = 0.01479f * adc_raw + 9.11f;
-            graf[graf_idx] = temp_actual_c;     // o la variable de temperatura que quieras registrar
+            graf[graf_idx] = temp_actual_c;
             graf_idx++;
             last_graf = now;
         }
-       
-         // 
+
+        //
         if (now-last>=periodo){
             uint32_t adc_raw = pt_get_adc();
             temp_actual_c = 0.01479f * adc_raw + 9.11f;
@@ -126,46 +154,54 @@ void app_main() {
             calc_pwm((float) duty_cycle);
             last=now;
         }
-        
+
         if ((now - last_log5) >= 300000000ULL) {
             printf("GRAF_START t=%.1f min, graf_idx=%d\n",
-                 now / 60000000.0f, graf_idx);
-
+                   now / 60000000.0f, graf_idx);
             for (int i = 0; i < graf_idx; i++) {
-             // tiempo relativo de cada muestra (0.5 min por punto)
-             float t_min = i * 0.5f;
-             printf("%5.1f, %.3f\n", t_min, graf[i]);
+                float t_min = i * 0.5f;
+                printf("%5.1f, %.3f\n", t_min, graf[i]);
             }
-
             printf("GRAF_END\n\n");
             last_log5 = now;
         }
 
-
         if (now - last_prnt >= 1000000) {
             uint32_t adc_raw = pt_get_adc();
             temp_actual_c = 0.01479f * adc_raw + 9.11f;
-
-            float error   = pid.prev_error;
+            float error = pid.prev_error;
             float ki_term = pid.ki * pid.integral;
             float kp_term = pid.kp * error;
             float sp_ctrl = pid_temp_get_sp_ctrl(&pid);
 
             printf("ADC=%" PRIu32
-                "  T_true=%.2f C  T_ctrl=%.2f C"
-                "  err=%.2f  Kp=%.3f  KiTerm=%.2f  duty=%.1f %%\n",
-                adc_raw,
-                temp_actual_c,   // T_true
-                sp_ctrl,         // T_ctrl
-                error,
-                kp_term,
-                ki_term,
-                duty_cycle);
+                   " T_true=%.2f C T_ctrl=%.2f C"
+                   " err=%.2f Kp=%.3f KiTerm=%.2f duty=%.1f %%\n",
+                   adc_raw,
+                   temp_actual_c,
+                   sp_ctrl,
+                   error,
+                   kp_term,
+                   ki_term,
+                   duty_cycle);
+
+            // ← MOTOR (3/3): actualizar y mostrar RPM
+            motor_rpm_update();
+            uint32_t rpm = motor_rpm_get_rpm();
+            // ✅ DEBUG RPM (ver si el modulo está calculando algo)
+             printf("RPM DEBUG: %lu\n", (unsigned long)rpm);
+
+            printf("Motor: %lu Hz | %lu RPM\n",
+                   (unsigned long)motor_rpm_get_freq(),
+                   (unsigned long)rpm);
+
+            // ✅ DISPLAY (aquí se actualiza)
+            display_show(temp_actual_c, mostrar_temp, rpm);
 
             last_prnt = now;
         }
-        
     }
 }
-//21.6 807     21.4 831
-// 35 1645      35.4 1771
+
+//21.6 807 21.4 831
+// 35 1645 35.4 1771
