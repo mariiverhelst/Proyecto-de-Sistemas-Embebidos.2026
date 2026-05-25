@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biorreactor - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- HEADER -->
+    <header>
+        <h1>🧬 Biorreactor - Monitor</h1>
+        <span id="ble-status" class="status disconnected">⚪ Desconectado</span>
+    </header>
+
+    <!-- VALORES ACTUALES -->
+    <div class="cards">
+        <div class="card temp">
+            <h3>🌡️ Temperatura</h3>
+            <span id="val-temp" class="big-number">--</span>
+            <span class="unit">°C</span>
+        </div>
+        <div class="card">
+            <h3>🎯 Setpoint</h3>
+            <span id="val-sp" class="big-number">--</span>
+            <span class="unit">°C</span>
+        </div>
+        <div class="card">
+            <h3>⚡ Duty Cycle</h3>
+            <span id="val-duty" class="big-number">--</span>
+            <span class="unit">%</span>
+        </div>
+        <div class="card">
+            <h3>⚙️ RPM</h3>
+            <span id="val-rpm" class="big-number">--</span>
+            <span class="unit">rpm</span>
+        </div>
+    </div>
+
+    <!-- MUESTRA ACTUAL -->
+    <div class="panel" style="text-align:center; padding:10px;">
+        <span style="color:#aaa;">Muestra actual: </span>
+        <span id="val-muestra" style="color:#fff; font-weight:bold; font-size:1.2em;">0</span>
+    </div>
+
+    <!-- GRÁFICA TEMPERATURA -->
+    <div class="chart-container">
+        <h2>📈 Temperatura en Tiempo Real</h2>
+        <canvas id="tempChart"></canvas>
+    </div>
+
+    <!-- GRÁFICA RPM -->
+    <div class="chart-container">
+        <h2>📈 RPM del Motor</h2>
+        <canvas id="rpmChart"></canvas>
+    </div>
+
+    <!-- PARÁMETROS PID -->
+    <div class="panel">
+        <h2>🎛️ Parámetros PID</h2>
+        <div class="pid-grid">
+            <div class="pid-item">
+                <label>Kp</label>
+                <span id="val-kp" class="pid-value">--</span>
+            </div>
+            <div class="pid-item">
+                <label>Ki</label>
+                <span id="val-ki" class="pid-value">--</span>
+            </div>
+            <div class="pid-item">
+                <label>Kd</label>
+                <span id="val-kd" class="pid-value">--</span>
+            </div>
+            <div class="pid-item">
+                <label>Setpoint</label>
+                <span id="val-sp2" class="pid-value">--</span>
+                <span class="pid-unit">°C</span>
+            </div>
+            <div class="pid-item">
+                <label>Duty Cycle</label>
+                <span id="val-duty2" class="pid-value">--</span>
+                <span class="pid-unit">%</span>
+            </div>
+            <div class="pid-item">
+                <label>Severidad</label>
+                <span id="val-sev" class="pid-value">--</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ERRORES -->
+    <div class="panel">
+        <h2>⚠️ Flags de Error</h2>
+        <div id="error-panel" class="error-panel">
+            <p class="no-errors">✅ Sin errores</p>
+        </div>
+    </div>
+
+    <!-- HISTORIAL -->
+    <div class="panel">
+        <h2>📦 Historial (3 días)</h2>
+        <div class="hist-buttons">
+            <button id="btn-download" onclick="descargarHistorial()">📡 Descargar del ESP32</button>
+            <a href="/descargar_csv" class="btn-csv">📥 Descargar CSV</a>
+        </div>
+        <p id="hist-status"></p>
+        <canvas id="histChart" style="display:none;"></canvas>
+    </div>
+
+    <script>
+        var socket = io();
+        var MAX_POINTS = 120;
+
+        var tempData = { labels: [], data: [], spData: [] };
+        var rpmData  = { labels: [], data: [] };
+
+        // GRÁFICA DE TEMPERATURA
+        var tempChart = new Chart(document.getElementById('tempChart'), {
+            type: 'line',
+            data: {
+                labels: tempData.labels,
+                datasets: [
+                    {
+                        label: 'Temperatura (°C)',
+                        data: tempData.data,
+                        borderColor: '#e74c3c',
+                        backgroundColor: 'rgba(231,76,60,0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Setpoint (°C)',
+                        data: tempData.spData,
+                        borderColor: '#3498db',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0,
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                scales: {
+                    y: { title: { display: true, text: '°C' } },
+                    x: { title: { display: true, text: 'Muestra' } }
+                }
+            }
+        });
+
+        // GRÁFICA DE RPM
+        var rpmChart = new Chart(document.getElementById('rpmChart'), {
+            type: 'line',
+            data: {
+                labels: rpmData.labels,
+                datasets: [{
+                    label: 'RPM',
+                    data: rpmData.data,
+                    borderColor: '#2ecc71',
+                    backgroundColor: 'rgba(46,204,113,0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                scales: {
+                    y: { title: { display: true, text: 'RPM' }, beginAtZero: true },
+                    x: { title: { display: true, text: 'Muestra' } }
+                }
+            }
+        });
+
+        // RECIBIR DATOS
+        socket.on('sensor_data', function(d) {
+            document.getElementById('val-temp').textContent  = d.temp;
+            document.getElementById('val-sp').textContent    = d.setpoint;
+            document.getElementById('val-duty').textContent  = d.duty;
+            document.getElementById('val-rpm').textContent   = d.rpm;
+            document.getElementById('val-kp').textContent    = d.kp;
+            document.getElementById('val-ki').textContent    = d.ki;
+            document.getElementById('val-kd').textContent    = d.kd;
+            document.getElementById('val-sp2').textContent   = d.setpoint;
+            document.getElementById('val-duty2').textContent = d.duty;
+            document.getElementById('val-muestra').textContent = d.muestra;
+
+            var sevEl = document.getElementById('val-sev');
+            var sevNames = ['OK', 'WARN', 'CRIT'];
+            var sevColors = ['#2ecc71', '#f1c40f', '#e74c3c'];
+            sevEl.textContent = sevNames[d.severity] || d.severity;
+            sevEl.style.color = sevColors[d.severity] || '#fff';
+
+            // Gráfica temperatura — usa número de muestra
+            tempData.labels.push(d.muestra);
+            tempData.data.push(d.temp);
+            tempData.spData.push(d.setpoint);
+            if (tempData.data.length > MAX_POINTS) {
+                tempData.labels.shift();
+                tempData.data.shift();
+                tempData.spData.shift();
+            }
+            tempChart.update();
+
+            // Gráfica RPM — usa número de muestra
+            rpmData.labels.push(d.muestra);
+            rpmData.data.push(d.rpm);
+            if (rpmData.data.length > MAX_POINTS) {
+                rpmData.labels.shift();
+                rpmData.data.shift();
+            }
+            rpmChart.update();
+
+            // Errores
+            var errorPanel = document.getElementById('error-panel');
+            if (d.errores.length === 0) {
+                errorPanel.innerHTML = '<p class="no-errors">✅ Sin errores</p>';
+            } else {
+                errorPanel.innerHTML = d.errores.map(function(e) {
+                    var icon = '🔵';
+                    var cls = 'info';
+                    if (e.tipo === 'warn') { icon = '🟡'; cls = 'warn'; }
+                    if (e.tipo === 'crit') { icon = '🔴'; cls = 'crit'; }
+                    return '<div class="error-item ' + cls + '">' + icon + ' ' + e.msg + '</div>';
+                }).join('');
+            }
+        });
+
+        // ESTADO BLE
+        socket.on('ble_status', function(d) {
+            var el = document.getElementById('ble-status');
+            if (d.connected) {
+                el.textContent = '🟢 Conectado';
+                el.className = 'status connected';
+            } else {
+                el.textContent = '🔴 Desconectado';
+                el.className = 'status disconnected';
+            }
+        });
+
+        // HISTORIAL
+        var histChart = null;
+
+        function descargarHistorial() {
+            document.getElementById('hist-status').textContent = '📡 Solicitando...';
+            document.getElementById('btn-download').disabled = true;
+            socket.emit('download_history');
+        }
+
+        socket.on('history_status', function(d) {
+            document.getElementById('hist-status').textContent = d.msg;
+        });
+
+        socket.on('history_complete', function(d) {
+            document.getElementById('hist-status').textContent =
+                '✅ Recibidas ' + d.total + ' entradas';
+            document.getElementById('btn-download').disabled = false;
+
+            var labels = d.data.map(function(e) {
+                return e.index;
+            });
+            var temps = d.data.map(function(e) { return e.temp; });
+
+            var canvas = document.getElementById('histChart');
+            canvas.style.display = 'block';
+
+            if (histChart) histChart.destroy();
+            histChart = new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Temperatura histórica (°C)',
+                        data: temps,
+                        borderColor: '#9b59b6',
+                        backgroundColor: 'rgba(155,89,182,0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { title: { display: true, text: '°C' } },
+                        x: { title: { display: true, text: 'Muestra' } }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
