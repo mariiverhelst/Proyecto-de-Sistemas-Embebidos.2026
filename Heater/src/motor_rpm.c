@@ -10,7 +10,7 @@ static const char *TAG = "MOTOR";
 /* ======================== DEFINES ========================== */
 
 // Pin de entrada (NE555 → NPN → pull-up 4.7kΩ a 3.3V)
-#define PIN_PULSO       GPIO_NUM_4
+#define PIN_PULSO       4
 
 // Parámetros del motor (calibrado con tacómetro)
 #define PASOS_POR_REV   200       // Motor 1.8°
@@ -18,7 +18,7 @@ static const char *TAG = "MOTOR";
 #define PULSOS_POR_REV  (PASOS_POR_REV * MICROSTEPPING)  // 1600
 
 // Promedio móvil
-#define MUESTRAS        8
+#define MUESTRAS        40
 
 // Timeout: si no hay pulsos en 2 segundos → motor parado
 #define TIMEOUT_US      2000000
@@ -41,7 +41,7 @@ static uint32_t freq_actual = 0;
 /* ======================== FUNCIONES ======================== */
 
 /**
- * ISR: captura el timestamp en cada flanco de BAJADA.
+ *  captura el timestamp en cada flanco de BAJADA.
  */
 static void IRAM_ATTR isr_flanco_bajada(void *arg)
 {
@@ -52,6 +52,7 @@ static void IRAM_ATTR isr_flanco_bajada(void *arg)
     }
 
     tiempo_anterior = tiempo_actual;
+    
 }
 
 /**
