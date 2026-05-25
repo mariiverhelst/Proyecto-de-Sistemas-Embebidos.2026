@@ -26,7 +26,7 @@
 #define PID_OVERTEMP_DELTA          2.5f
 #define PID_LOCK_TIME_MS            600000ULL
 // Limites de integral
-#define PID_INT_MIN                -1.0f
+#define PID_INT_MIN                -0.5f
 #define PID_INT_MAX                 70.0f
 // Limites de derivada
 #define PID_DERIV_MIN              -2.0f

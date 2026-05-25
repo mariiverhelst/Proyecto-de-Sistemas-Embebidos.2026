@@ -1,14 +1,9 @@
-
 #include "lcd.h"
 #include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
-
-
-// Declaración de la función ROM antigua para que el compilador no se queje
-void ets_delay_us(uint32_t us);
 
 #define I2C_MASTER_SCL_IO           22
 #define I2C_MASTER_SDA_IO           21
@@ -17,22 +12,10 @@ void ets_delay_us(uint32_t us);
 #define I2C_MASTER_TX_BUF_DISABLE   0
 #define I2C_MASTER_RX_BUF_DISABLE   0
 
-// Cambia esta dirección si tu scanner dice otra (0x27, 0x3F, etc.)
 #define PCF8574_ADDR                0x20
 
 static const char *TAG = "LCD1602";
 
-// Mapeo P0–P7 -> LCD, según tu cableado:
-//
-// P0 -> RS
-// P1 -> RW
-// P2 -> EN
-// P3 -> VO (contraste)  <-- lo mantenemos a 1 o 0 fijo
-// P4 -> D4
-// P5 -> D5
-// P6 -> D6
-// P7 -> D7
-//
 #define PIN_RS  (1 << 0)
 #define PIN_RW  (1 << 1)
 #define PIN_EN  (1 << 2)
@@ -42,8 +25,6 @@ static const char *TAG = "LCD1602";
 #define PIN_D6  (1 << 6)
 #define PIN_D7  (1 << 7)
 
-// pon PIN_VO si quieres VO alto, o 0 si lo quieres bajo.
-// prueba qué nivel te da mejor contraste.
 static uint8_t contrast_level = 0;
 
 static esp_err_t i2c_master_init(void)
@@ -85,15 +66,11 @@ static void lcd_pulse_enable(uint8_t data)
 static void lcd_write4bits(uint8_t nibble, uint8_t mode)
 {
     uint8_t data = 0;
-
     if (nibble & 0x01) data |= PIN_D4;
     if (nibble & 0x02) data |= PIN_D5;
     if (nibble & 0x04) data |= PIN_D6;
     if (nibble & 0x08) data |= PIN_D7;
-
-    if (mode) data |= PIN_RS;   // datos
-    // RW lo dejamos siempre en 0 (escritura), no activamos PIN_RW
-
+    if (mode) data |= PIN_RS;
     lcd_pulse_enable(data);
 }
 
@@ -118,22 +95,29 @@ esp_err_t lcd_init(void)
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C initialized");
 
-    vTaskDelay(pdMS_TO_TICKS(50));  // >40 ms after power-on
+    vTaskDelay(pdMS_TO_TICKS(100));
+    pcf8574_write(0x00);
+    vTaskDelay(pdMS_TO_TICKS(50));
 
-    // init sequence 4‑bit (HD44780)
     lcd_write4bits(0x03, 0);
     vTaskDelay(pdMS_TO_TICKS(5));
     lcd_write4bits(0x03, 0);
-    esp_rom_delay_us(150);
+    vTaskDelay(pdMS_TO_TICKS(5));
     lcd_write4bits(0x03, 0);
-    lcd_write4bits(0x02, 0); // 4‑bit mode
+    vTaskDelay(pdMS_TO_TICKS(5));
+    lcd_write4bits(0x02, 0);
+    vTaskDelay(pdMS_TO_TICKS(5));
 
-    lcd_cmd(0x28); // 4‑bit, 2 lines, 5x8 dots
-    lcd_cmd(0x08); // display off
-    lcd_cmd(0x01); // clear
+    lcd_cmd(0x28);
     vTaskDelay(pdMS_TO_TICKS(2));
-    lcd_cmd(0x06); // entry mode set
-    lcd_cmd(0x0C); // display on, cursor off
+    lcd_cmd(0x08);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    lcd_cmd(0x01);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    lcd_cmd(0x06);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    lcd_cmd(0x0C);
+    vTaskDelay(pdMS_TO_TICKS(2));
 
     return ESP_OK;
 }
@@ -156,4 +140,9 @@ void lcd_print(const char *s)
     while (*s) {
         lcd_data((uint8_t)*s++);
     }
+}
+
+void lcd_print_char(char c)
+{
+    lcd_data((uint8_t)c);
 }
