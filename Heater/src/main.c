@@ -14,38 +14,35 @@
 #include "motor_rpm.h"
 #include "display.h"
 #include "esp_timer.h"
-
-
-
-///////////////////////////////////////////////////////////////////////////
-// el Pin 21 y 22 NO SE PUEDEN USAR PARA OTRA COSA, SON PARA EL LCD////////
-// Pin 32 es el pin de sensado del voltage de la PT100/////////////
-// Pin 4 es el pin de lectura de RPM del motor (NPN desde NE555)///
-//////////////////////////////////////////////////////////////////////////
+#include "error_flags.h"
+#include "system_log.h"
+#include "ble_gatt.h"
+#include "data_log.h"
 
 #define PWM 13
 #define ZC 26
-#define BTN 23   // ✅ BOTÓN
+#define BTN 23
 
-#define BTN_UP      15   
+#define BTN_UP      15
 #define BTN_DOWN    19
 #define BTN_ENTER   5
 
 #define periodo 8000000
 
 static volatile uint64_t now = 0;
-static volatile uint64_t last=0;
-static uint64_t last_adc, last_prnt,last_graf, last_log5,last_rpm = 0;
+static volatile uint64_t last = 0;
+static uint64_t last_adc, last_prnt, last_graf, last_rpm, last_data_log = 0;
 static volatile uint64_t pwm_on = 0;
 
-float temp_actual_c =0.0f;
+float temp_actual_c = 0.0f;
 float duty_cycle = 0.0f;
+
 static int graf_idx = 0;
 static pid_temp_t pid;
 static float graf[240] = {0.0f};
 
+static error_state_t sys_errors;
 
-// ★ MENÚ — máquina de estados y dígitos
 typedef enum {
     SET_DECENAS, SET_UNIDADES, SET_DECIMAL,
     KP_MILES, KP_CENTENAS, KP_DECENAS, KP_UNIDADES, KP_DECIMAL,
@@ -62,26 +59,30 @@ static uint32_t lastBlink = 0;
 static bool cursorOn = true;
 #define BLINK_MS 300
 
-// MENÚ — funciones auxiliares
-static inline uint32_t millis(void) {
+static inline uint32_t millis(void)
+{
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
-static float getTemp(void) {
+static float getTemp(void)
+{
     return t_dec * 10.0f + t_uni + t_dp * 0.1f;
 }
 
-static float getKP(void) {
+static float getKP(void)
+{
     return kp_mil * 1000.0f + kp_cen * 100.0f +
-           kp_dec * 10.0f   + kp_uni + kp_dp * 0.1f;
+           kp_dec * 10.0f + kp_uni + kp_dp * 0.1f;
 }
 
-static float getKI(void) {
+static float getKI(void)
+{
     return ki_cen * 100.0f + ki_dec * 10.0f + ki_uni +
-           ki_dp1 * 0.1f   + ki_dp2 * 0.01f;
+           ki_dp1 * 0.1f + ki_dp2 * 0.01f;
 }
 
-static int* get_digito_activo(void) {
+static int *get_digito_activo(void)
+{
     switch (estado) {
         case SET_DECENAS:  return &t_dec;
         case SET_UNIDADES: return &t_uni;
@@ -100,7 +101,8 @@ static int* get_digito_activo(void) {
     }
 }
 
-static void mostrar_setup(void) {
+static void mostrar_setup(void)
+{
     char cd  = (estado == SET_DECENAS  && cursorOn) ? '_' : ('0' + t_dec);
     char cu  = (estado == SET_UNIDADES && cursorOn) ? '_' : ('0' + t_uni);
     char cdp = (estado == SET_DECIMAL  && cursorOn) ? '_' : ('0' + t_dp);
@@ -134,32 +136,55 @@ static void mostrar_setup(void) {
     if (estado == FINAL) lcd_print(" OK!");
     else lcd_print("     ");
 }
-// ★ MENÚ — fin funciones auxiliares
 
-
-// ✅ modo display
 bool mostrar_temp = true;
 
-void IRAM_ATTR zero_cross(void* arg){
-    //gpio_set_level(PWM,triac_enable);
-    if (now-last<= pwm_on){
-        gpio_set_level(PWM,1);
+static void ble_cmd_handler(uint8_t cmd_type, float value)
+{
+    uint64_t ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+
+    switch (cmd_type) {
+        case BLE_CMD_SET_TEMP:
+            pid_temp_set_setpoint(&pid, value);
+            system_log_add(LOG_LEVEL_INFO, ms, "BLE: Setpoint=%.1f", value);
+            break;
+        case BLE_CMD_SET_KP:
+            pid_temp_set_constants(&pid, value, pid.ki, pid.kd);
+            system_log_add(LOG_LEVEL_INFO, ms, "BLE: Kp=%.2f", value);
+            break;
+        case BLE_CMD_SET_KI:
+            pid_temp_set_constants(&pid, pid.kp, value, pid.kd);
+            system_log_add(LOG_LEVEL_INFO, ms, "BLE: Ki=%.2f", value);
+            break;
+        case BLE_CMD_SET_KD:
+            pid_temp_set_constants(&pid, pid.kp, pid.ki, value);
+            system_log_add(LOG_LEVEL_INFO, ms, "BLE: Kd=%.4f", value);
+            break;
     }
-    else gpio_set_level(PWM,0);
 }
 
-void calc_pwm(float duty){
-    if (duty<0) duty=0;
-    if (duty<100){
-        pwm_on= (duty*periodo)/100;
+void IRAM_ATTR zero_cross(void *arg)
+{
+    if (now - last <= pwm_on) {
+        gpio_set_level(PWM, 1);
+    } else {
+        gpio_set_level(PWM, 0);
     }
-    else pwm_on=periodo;
 }
 
-void app_main() {
+void calc_pwm(float duty)
+{
+    if (duty < 0) duty = 0;
+    if (duty < 100) {
+        pwm_on = (duty * periodo) / 100;
+    } else {
+        pwm_on = periodo;
+    }
+}
 
-    gpio_config_t io_config =
-    {
+void app_main(void)
+{
+    gpio_config_t io_config = {
         .pin_bit_mask = (1ULL << ZC),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
@@ -171,10 +196,10 @@ void app_main() {
     gpio_install_isr_service(0);
     gpio_isr_handler_add(ZC, zero_cross, NULL);
 
-    motor_rpm_init();    // ← MOTOR (2/3)
+    motor_rpm_init();
+    ble_gatt_init(&ble_cmd_handler);
 
-    gpio_config_t out_cfg =
-    {
+    gpio_config_t out_cfg = {
         .pin_bit_mask = (1ULL << PWM),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
@@ -184,14 +209,14 @@ void app_main() {
     gpio_config(&out_cfg);
 
     timer_config_t timer_config = {
-        .divider=80,
-        .counter_dir=TIMER_COUNT_UP,
-        .alarm_en=TIMER_ALARM_DIS,
-        .auto_reload=false
+        .divider = 80,
+        .counter_dir = TIMER_COUNT_UP,
+        .alarm_en = TIMER_ALARM_DIS,
+        .auto_reload = false
     };
-    timer_init(TIMER_GROUP_0,TIMER_0,&timer_config);
-    timer_set_counter_value(TIMER_GROUP_0,TIMER_0,0);
-    timer_start(TIMER_GROUP_0,TIMER_0);
+    timer_init(TIMER_GROUP_0, TIMER_0, &timer_config);
+    timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0);
+    timer_start(TIMER_GROUP_0, TIMER_0);
 
     lcd_init();
     lcd_clear();
@@ -200,41 +225,33 @@ void app_main() {
         lcd_set_cursor(0, 1);
         lcd_print("Error PT100");
     }
-
     lcd_set_cursor(0, 0);
     lcd_print("Hola Usuario!");
 
     pid_temp_init(&pid);
 
-    // ✅ INICIALIZAR DISPLAY
     display_init();
 
-    // ✅ CONFIGURAR BOTÓN
-    gpio_config_t btn1_cfg =
-    {
+    gpio_config_t btn1_cfg = {
         .pin_bit_mask = (1ULL << BTN),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
-
     gpio_config(&btn1_cfg);
     int last_btn = 1;
 
-        // ════════════════════════════════════════════
-    // ★ MENÚ — configurar botones y correr menú
-    // ════════════════════════════════════════════
     gpio_config_t btn_cfg = {
         .pin_bit_mask = (1ULL << BTN_UP) | (1ULL << BTN_DOWN) | (1ULL << BTN_ENTER),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&btn_cfg);
 
-    vTaskDelay(pdMS_TO_TICKS(1500));   // splash "Hola lindas"
+    vTaskDelay(pdMS_TO_TICKS(1500));
     lcd_clear();
     mostrar_setup();
 
@@ -245,8 +262,8 @@ void app_main() {
             if (estado != FINAL) mostrar_setup();
         }
 
-        bool up    = (gpio_get_level(BTN_UP)    == 0);
-        bool down  = (gpio_get_level(BTN_DOWN)  == 0);
+        bool up    = (gpio_get_level(BTN_UP) == 0);
+        bool down  = (gpio_get_level(BTN_DOWN) == 0);
         bool enter = (gpio_get_level(BTN_ENTER) == 0);
 
         if (up && !lastUp && estado != FINAL) {
@@ -274,12 +291,6 @@ void app_main() {
                 estado = KI_CENTENAS;
             } else if (estado == KI_DECIMAL2) {
                 estado = FINAL;
-                printf("══════════════════════════════\n");
-                printf("  CONFIGURACION COMPLETA:\n");
-                printf("  Temp = %.1f C\n", getTemp());
-                printf("  KP   = %.1f\n",   getKP());
-                printf("  KI   = %.2f\n",   getKI());
-                printf("══════════════════════════════\n");
             } else {
                 estado = (estado_t)((int)estado + 1);
             }
@@ -292,45 +303,38 @@ void app_main() {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // Aplicar valores configurados al PID
     pid_temp_set_setpoint(&pid, getTemp());
     pid_temp_set_constants(&pid, getKP(), getKI(), pid.kd);
 
+    error_flags_init(&sys_errors);
+    system_log_init();
+    data_log_init();
+    system_log_add(LOG_LEVEL_INFO, 0, "Sistema iniciado - Biorreactor");
+    system_log_add(LOG_LEVEL_INFO, 0, "SP=%.1f Kp=%.1f Ki=%.2f Kd=%.4f",
+                   pid.sp_true, pid.kp, pid.ki, pid.kd);
     
-    
-    // ════════════════════════════════════════════
-    // ★ MENÚ — fin
-    // ════════════════════════════════════════════
 
+    while (1) {
+        timer_get_counter_value(TIMER_GROUP_0, TIMER_0, &now);
 
-
-    while(1){
-
-        timer_get_counter_value(TIMER_GROUP_0,TIMER_0,&now);
-          
-       
-
-        // ✅ LECTURA BOTÓN
         int btn = gpio_get_level(BTN);
         if (last_btn == 1 && btn == 0) {
             mostrar_temp = !mostrar_temp;
-
-            // anti-rebote simple
-            for(volatile int i=0;i<100000;i++);
+            for (volatile int i = 0; i < 100000; i++);
         }
         last_btn = btn;
 
-        if (now-last_adc>=100){
+        if (now - last_adc >= 100) {
             pt100_measurement();
-            
-            last_adc=now;
+            last_adc = now;
         }
+
         if (now - last_rpm >= 1500) {
             motor_rpm_update();
             last_rpm = now;
         }
 
-        if (graf_idx < 240 && (now - last_graf) >= 30000000ULL) { // 30 s = 30 000 000 us
+        if (graf_idx < 240 && (now - last_graf) >= 30000000ULL) {
             uint32_t adc_raw = pt_get_adc();
             temp_actual_c = 0.01479f * adc_raw + 4.70f;
             graf[graf_idx] = temp_actual_c;
@@ -338,62 +342,73 @@ void app_main() {
             last_graf = now;
         }
 
-        //
-        if (now-last>=periodo){
-            uint32_t adc_raw = pt_get_adc();
-            temp_actual_c = 0.01479f * adc_raw + 4.70f;
-            duty_cycle = pid_temp_update(&pid, temp_actual_c,now/1000);
-            calc_pwm((float) duty_cycle);
-            last=now;
+        if (now - last_data_log >= DATA_LOG_INTERVAL_US) {
+            uint32_t time_s = (uint32_t)(now / 1000000ULL);
+            data_log_add(temp_actual_c, time_s);
+            last_data_log = now;
         }
 
-        if ((now - last_log5) >= 300000000ULL) {
-            printf("GRAF_START t=%.1f min, graf_idx=%d\n",
-                   now / 60000000.0f, graf_idx);
-            for (int i = 0; i < graf_idx; i++) {
-                float t_min = i * 0.5f;
-                printf("%5.1f, %.3f\n", t_min, graf[i]);
-            }
-            printf("GRAF_END\n\n");
-            last_log5 = now;
+        if (now - last >= periodo) {
+            uint32_t adc_raw = pt_get_adc();
+            temp_actual_c = 0.01479f * adc_raw + 4.70f;
+            duty_cycle = pid_temp_update(&pid, temp_actual_c, now / 1000);
+            calc_pwm((float)duty_cycle);
+            last = now;
         }
 
         if (now - last_prnt >= 500000) {
             uint32_t adc_raw = pt_get_adc();
             temp_actual_c = 0.01479f * adc_raw + 4.70f;
-            float error = pid.prev_error;
-            float ki_term = pid.ki * pid.integral;
-            float kp_term = pid.kp * error;
-            float sp_ctrl = pid_temp_get_sp_ctrl(&pid);
 
-            printf("ADC=%" PRIu32
-                   " T_true=%.2f C T_ctrl=%.2f C"
-                   " err=%.2f Kp=%.3f KiTerm=%.2f duty=%.1f %%\n",
-                   adc_raw,
-                   temp_actual_c,
-                   sp_ctrl,
-                   error,
-                   kp_term,
-                   ki_term,
-                   duty_cycle);
-
-            // ← MOTOR (3/3): actualizar y mostrar RPM
-            
             uint32_t rpm = motor_rpm_get_rpm();
-            // ✅ DEBUG RPM (ver si el modulo está calculando algo)
-             printf("RPM DEBUG: %lu\n", (unsigned long)rpm);
 
-            printf("Motor: %lu Hz | %lu RPM\n",
-                   (unsigned long)motor_rpm_get_freq(),
-                   (unsigned long)rpm);
-
-            // ✅ DISPLAY (aquí se actualiza)
             display_show(temp_actual_c, mostrar_temp, rpm);
+
+            uint64_t now_ms = now / 1000;
+
+            error_flags_update(&sys_errors,
+                               temp_actual_c,
+                               pid.sp_true,
+                               rpm,
+                               adc_raw,
+                               pid_temp_is_boost_active(&pid),
+                               pid_temp_is_locked(&pid, now_ms),
+                               pid.ramp_rate_c_s,
+                               pid_temp_get_sp_ctrl(&pid));
+
+            if (error_flags_changed(&sys_errors)) {
+                uint8_t changed = sys_errors.flags ^ sys_errors.prev_flags;
+                for (int bit = 0; bit < 8; bit++) {
+                    uint8_t mask = (1 << bit);
+                    if (changed & mask) {
+                        bool activated = (sys_errors.flags & mask) != 0;
+                        const char *desc = error_flag_to_string(mask);
+
+                        log_level_t lvl = LOG_LEVEL_INFO;
+                        if (mask & ERR_MASK_WARNING)  lvl = LOG_LEVEL_WARN;
+                        if (mask & ERR_MASK_CRITICAL) lvl = LOG_LEVEL_ERROR;
+
+                        system_log_add(lvl, now_ms, "%s -> %s",
+                                       desc,
+                                       activated ? "ACTIVO" : "resuelto");
+                    }
+                }
+            }
+
+            ble_sensor_packet_t pkt = {
+                .temperature    = temp_actual_c,
+                .setpoint       = pid.sp_true,
+                .duty_cycle     = duty_cycle,
+                .kp             = pid.kp,
+                .ki             = pid.ki,
+                .kd             = pid.kd,
+                .rpm            = rpm,
+                .error_flags    = sys_errors.flags,
+                .error_severity = sys_errors.severity,
+            };
+            ble_gatt_update_data(&pkt);
 
             last_prnt = now;
         }
     }
 }
-
-//21.6 807 21.4 831
-// 35 1645 35.4 1771
